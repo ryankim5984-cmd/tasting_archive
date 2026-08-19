@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="theme-color" content="#111111" />
-<meta name="taste-archive-build" content="2026-08-19-mobile-fix-1" />
+<meta name="taste-archive-build" content="2026-08-19-mobile-drawer-2" />
 <title>TASTE ARCHIVE</title>
 <style>
   :root{
@@ -32,6 +32,8 @@
   .nav button:hover,.nav button.active{background:var(--panel-2);color:var(--text)}
   .nav .section-label{padding:18px 13px 6px;color:var(--muted);font-size:10px;letter-spacing:.16em}
   .side-bottom{position:absolute;left:18px;right:18px;bottom:20px;display:grid;grid-template-columns:1fr 44px;gap:8px}
+  .mobile-menu-btn,.mobile-menu-overlay{display:none}
+
   .main{grid-column:2;padding:0 34px 60px;min-width:0}
   .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;padding:18px 0;background:linear-gradient(var(--bg) 72%, transparent)}
   .search{flex:1;max-width:650px;position:relative;min-width:0}
@@ -137,23 +139,77 @@
   @media (max-width:980px){
     :root{--sidebar:0px}
     .app{display:block}
-    .sidebar{position:sticky;top:0;width:100%;height:auto;padding:10px 14px;border-right:0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
-    .brand{width:auto;padding:0;margin-right:auto}
-    .brand strong{font-size:17px}
-    .brand span,.nav .section-label,.side-bottom{display:none}
-    .nav{flex-direction:row;overflow:auto}
-    .nav button{white-space:nowrap;padding:9px 10px}
+
+    .sidebar{
+      position:sticky;top:0;inset:auto;width:100%;height:64px;padding:0 14px;
+      border-right:0;border-bottom:1px solid var(--line);
+      display:flex;align-items:center;gap:10px;overflow:visible;
+      background:var(--panel);z-index:60;
+    }
+    .mobile-menu-btn{
+      display:flex;flex:0 0 44px;width:44px;height:44px;border:0;background:transparent;
+      border-radius:12px;align-items:center;justify-content:center;flex-direction:column;gap:5px;
+      color:var(--text);padding:0;
+    }
+    .mobile-menu-btn:hover{background:var(--panel-2)}
+    .mobile-menu-btn span{
+      display:block;width:21px;height:2px;border-radius:999px;background:currentColor;
+      transition:transform .22s ease,opacity .22s ease;
+    }
+    .sidebar.menu-open .mobile-menu-btn span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+    .sidebar.menu-open .mobile-menu-btn span:nth-child(2){opacity:0}
+    .sidebar.menu-open .mobile-menu-btn span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+
+    .brand{
+      width:auto;min-width:0;padding:0;margin:0;display:flex;align-items:center;
+      overflow:hidden;white-space:nowrap;
+    }
+    .brand strong{font-size:18px;letter-spacing:.055em;overflow:hidden;text-overflow:ellipsis}
+    .brand span{display:none}
+
+    .nav{
+      position:fixed;top:64px;left:0;bottom:0;width:min(82vw,320px);
+      padding:18px 14px calc(24px + env(safe-area-inset-bottom));
+      background:var(--panel);border-right:1px solid var(--line);
+      box-shadow:18px 0 44px rgba(0,0,0,.16);
+      display:flex;flex-direction:column;gap:6px;overflow-y:auto;
+      transform:translateX(-105%);transition:transform .24s ease;z-index:70;
+    }
+    .sidebar.menu-open .nav{transform:translateX(0)}
+    .nav button{
+      width:100%;white-space:normal;padding:13px 14px;text-align:left;
+      font-size:15px;border-radius:12px;
+    }
+    .nav .section-label{display:block;padding:18px 13px 6px}
+
+    .mobile-menu-overlay{
+      display:block;position:fixed;inset:64px 0 0 0;border:0;padding:0;margin:0;
+      background:rgba(0,0,0,.38);opacity:0;visibility:hidden;pointer-events:none;
+      transition:opacity .22s ease,visibility .22s ease;z-index:55;
+    }
+    .mobile-menu-overlay.open{opacity:1;visibility:visible;pointer-events:auto}
+
+    .side-bottom{
+      position:fixed;left:14px;bottom:calc(18px + env(safe-area-inset-bottom));
+      width:min(calc(82vw - 28px),292px);right:auto;z-index:75;
+      display:grid;grid-template-columns:1fr 44px;gap:8px;
+      transform:translateX(calc(-105% - 14px));transition:transform .24s ease;
+    }
+    .sidebar.menu-open .side-bottom{transform:translateX(0)}
+
     .main{padding:0 16px 80px}
-    .topbar{top:57px}
+    .topbar{top:64px}
     .hero{grid-template-columns:1fr}
     .hero-side{grid-template-columns:repeat(3,1fr);grid-template-rows:auto}
     .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
   @media (max-width:640px){
-    .sidebar{overflow:auto}
-    .brand{min-width:max-content}
+    .sidebar{overflow:visible}
+    .brand{min-width:0}
     .brand span{display:none}
 
+    .nav{width:min(86vw,310px)}
+    .side-bottom{width:min(calc(86vw - 28px),282px)}
     .main{padding-left:12px;padding-right:12px}
     .topbar{gap:8px;padding:12px 0}
     .topbar .hide-mobile{display:none}
@@ -213,26 +269,30 @@
 </head>
 <body>
 <div class="app">
-  <aside class="sidebar">
-    <button class="brand" onclick="go('home')">
+  <aside class="sidebar" id="siteSidebar">
+    <button class="mobile-menu-btn" type="button" onclick="toggleMobileMenu()" aria-label="메뉴 열기" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <button class="brand" onclick="go('home');closeMobileMenu()">
       <strong>TASTE ARCHIVE</strong>
       <span>나의 미각 기록</span>
     </button>
     <nav class="nav">
-      <button data-page="home" onclick="go('home')">홈</button>
-      <button data-page="tasting" onclick="go('tasting')">테이스팅</button>
-      <button data-page="recipe" onclick="go('recipe')">레시피</button>
-      <button data-page="food" onclick="go('food')">스터디</button>
+      <button data-page="home" onclick="go(\'home\');closeMobileMenu()">홈</button>
+      <button data-page="tasting" onclick="go(\'tasting\');closeMobileMenu()">테이스팅</button>
+      <button data-page="recipe" onclick="go(\'recipe\');closeMobileMenu()">레시피</button>
+      <button data-page="food" onclick="go(\'food\');closeMobileMenu()">스터디</button>
       <div class="section-label">LIBRARY</div>
-      <button data-page="favorites" onclick="go('favorites')">즐겨찾기</button>
-      <button data-page="stats" onclick="go('stats')">통계</button>
-      <button data-page="settings" onclick="go('settings')">설정</button>
+      <button data-page="favorites" onclick="go(\'favorites\');closeMobileMenu()">즐겨찾기</button>
+      <button data-page="stats" onclick="go(\'stats\');closeMobileMenu()">통계</button>
+      <button data-page="settings" onclick="go(\'settings\');closeMobileMenu()">설정</button>
     </nav>
     <div class="side-bottom">
       <button class="btn" onclick="openQuickAdd()">+ 새 기록</button>
       <button class="icon-btn" onclick="toggleTheme()" title="화면 전환">◐</button>
     </div>
   </aside>
+  <button id="mobileMenuOverlay" class="mobile-menu-overlay" type="button" onclick="closeMobileMenu()" aria-label="메뉴 닫기"></button>
 
   <main class="main">
     <div class="topbar">
@@ -701,7 +761,29 @@ async function renderSearch(page){
   page.innerHTML=`<div class="section-head"><div><div class="eyebrow">SEARCH</div><h2>“${esc(currentFilter)}” 검색 결과</h2><p>${result.length}건을 찾았습니다.</p></div></div>${result.length?`<div class="grid">${result.map(x=>recordCard(x,x._type)).join('')}</div>`:emptyBlock('검색 결과가 없습니다.')}`;
 }
 
-function openQuickAdd(){openModal('quickModal')}
+function toggleMobileMenu(){
+  if(window.innerWidth>980)return;
+  const sidebar=document.getElementById('siteSidebar');
+  const overlay=document.getElementById('mobileMenuOverlay');
+  const btn=sidebar?.querySelector('.mobile-menu-btn');
+  const open=!sidebar.classList.contains('menu-open');
+  sidebar.classList.toggle('menu-open',open);
+  overlay.classList.toggle('open',open);
+  if(btn)btn.setAttribute('aria-expanded',String(open));
+  document.body.style.overflow=open?'hidden':'';
+}
+function closeMobileMenu(){
+  const sidebar=document.getElementById('siteSidebar');
+  const overlay=document.getElementById('mobileMenuOverlay');
+  const btn=sidebar?.querySelector('.mobile-menu-btn');
+  if(sidebar)sidebar.classList.remove('menu-open');
+  if(overlay)overlay.classList.remove('open');
+  if(btn)btn.setAttribute('aria-expanded','false');
+  if(!document.querySelector('.modal.open'))document.body.style.overflow='';
+}
+window.addEventListener('resize',()=>{if(window.innerWidth>980)closeMobileMenu()});
+
+function openQuickAdd(){closeMobileMenu();openModal('quickModal')}
 function openModal(id){document.getElementById(id).classList.add('open');document.body.style.overflow='hidden'}
 function closeModal(id){document.getElementById(id).classList.remove('open');document.body.style.overflow=''}
 function modalBackdrop(e,id){if(e.target.id===id)closeModal(id)}
