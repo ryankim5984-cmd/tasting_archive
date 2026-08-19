@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="theme-color" content="#111111" />
-<meta name="taste-archive-build" content="2026-08-19-mobile-drawer-2" />
+<meta name="taste-archive-build" content="2026-08-19-bugfix-3.1" />
 <title>TASTE ARCHIVE</title>
 <style>
   :root{
@@ -30,6 +30,8 @@
   .nav{display:flex;flex-direction:column;gap:6px}
   .nav button{border:0;background:transparent;color:var(--muted);padding:12px 13px;text-align:left;border-radius:12px;font-weight:700}
   .nav button:hover,.nav button.active{background:var(--panel-2);color:var(--text)}
+  .nav button[aria-current="page"]{background:var(--panel-2);color:var(--text)}
+  .mobile-menu-btn:focus-visible,.nav button:focus-visible,.brand:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .nav .section-label{padding:18px 13px 6px;color:var(--muted);font-size:10px;letter-spacing:.16em}
   .side-bottom{position:absolute;left:18px;right:18px;bottom:20px;display:grid;grid-template-columns:1fr 44px;gap:8px}
   .mobile-menu-btn,.mobile-menu-overlay{display:none}
@@ -169,7 +171,7 @@
 
     .nav{
       position:fixed;top:64px;left:0;bottom:0;width:min(82vw,320px);
-      padding:18px 14px calc(24px + env(safe-area-inset-bottom));
+      padding:18px 14px calc(118px + env(safe-area-inset-bottom));
       background:var(--panel);border-right:1px solid var(--line);
       box-shadow:18px 0 44px rgba(0,0,0,.16);
       display:flex;flex-direction:column;gap:6px;overflow-y:auto;
@@ -273,19 +275,19 @@
     <button class="mobile-menu-btn" type="button" onclick="toggleMobileMenu()" aria-label="메뉴 열기" aria-expanded="false">
       <span></span><span></span><span></span>
     </button>
-    <button class="brand" onclick="go('home');closeMobileMenu()">
+    <button class="brand" type="button" data-nav-page="home">
       <strong>TASTE ARCHIVE</strong>
       <span>나의 미각 기록</span>
     </button>
     <nav class="nav">
-      <button data-page="home" onclick="go(\'home\');closeMobileMenu()">홈</button>
-      <button data-page="tasting" onclick="go(\'tasting\');closeMobileMenu()">테이스팅</button>
-      <button data-page="recipe" onclick="go(\'recipe\');closeMobileMenu()">레시피</button>
-      <button data-page="food" onclick="go(\'food\');closeMobileMenu()">스터디</button>
+      <button type="button" data-page="home" data-nav-page="home">홈</button>
+      <button type="button" data-page="tasting" data-nav-page="tasting">테이스팅</button>
+      <button type="button" data-page="recipe" data-nav-page="recipe">레시피</button>
+      <button type="button" data-page="food" data-nav-page="food">스터디</button>
       <div class="section-label">LIBRARY</div>
-      <button data-page="favorites" onclick="go(\'favorites\');closeMobileMenu()">즐겨찾기</button>
-      <button data-page="stats" onclick="go(\'stats\');closeMobileMenu()">통계</button>
-      <button data-page="settings" onclick="go(\'settings\');closeMobileMenu()">설정</button>
+      <button type="button" data-page="favorites" data-nav-page="favorites">즐겨찾기</button>
+      <button type="button" data-page="stats" data-nav-page="stats">통계</button>
+      <button type="button" data-page="settings" data-nav-page="settings">설정</button>
     </nav>
     <div class="side-bottom">
       <button class="btn" onclick="openQuickAdd()">+ 새 기록</button>
@@ -356,9 +358,29 @@ const CLOUD_TABLE='taste_archive';
 const DEFAULT_SUPABASE_URL='https://nrxppagzqkcipwqlzrkc.supabase.co';
 const DEFAULT_SUPABASE_PUBLISHABLE_KEY='sb_publishable_WnuZczFzsOldc55KT9la3g_H7EDEJor';
 let db, currentPage='home', currentFilter='all', currentPhotos=[], editing={type:null,id:null};
-let supabaseClient=null, cloudSession=null, cloudBusy=false, autoSyncTimer=null, authMode='login';
+let supabaseClient=null, cloudSession=null, cloudBusy=false, autoSyncTimer=null, authMode='login', authSubscription=null, cloudSyncPending=false;
 
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+
+function sanitizeRichHTML(value=''){
+  const doc=new DOMParser().parseFromString('<div id="safeRoot">'+String(value||'')+'</div>','text/html');
+  const root=doc.getElementById('safeRoot');
+  if(!root)return '';
+  root.querySelectorAll('script,style,iframe,object,embed,form,input,textarea,select,button,meta,link,base,svg,math').forEach(el=>el.remove());
+  root.querySelectorAll('*').forEach(el=>{
+    [...el.attributes].forEach(attr=>{
+      const name=attr.name.toLowerCase(), val=String(attr.value||'').trim();
+      if(name.startsWith('on')||name==='style'||name==='srcdoc')el.removeAttribute(attr.name);
+      if((name==='href'||name==='src')&&/^javascript:/i.test(val))el.removeAttribute(attr.name);
+    });
+    if(el.tagName==='A'){
+      const href=el.getAttribute('href')||'';
+      if(href&&!/^(https?:|mailto:|tel:|#)/i.test(href))el.removeAttribute('href');
+      if(el.getAttribute('href')){el.setAttribute('rel','noopener noreferrer');el.setAttribute('target','_blank')}
+    }
+  });
+  return root.innerHTML;
+}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 function fmtDate(v){if(!v)return ''; try{return new Date(v).toLocaleDateString('ko-KR')}catch{return v}}
 function parseTags(v){return [...new Set(String(v||'').split(',').map(x=>x.trim()).filter(Boolean))]}
@@ -394,8 +416,9 @@ async function migrateLegacyValues(){
 function getCloudConfig(){
   const url=(localStorage.getItem('taste_supabase_url')||DEFAULT_SUPABASE_URL||'').trim();
   const key=(localStorage.getItem('taste_supabase_key')||DEFAULT_SUPABASE_PUBLISHABLE_KEY||'').trim();
-  const valid=!!(url && key && /^https:\/\/.+\.supabase\.co\/?$/.test(url) && !url.includes('PASTE_') && !key.includes('PASTE_'));
-  return {url:url.replace(/\/$/,''),key,valid};
+  const unsafeKey=/^sb_secret_/i.test(key)||/service[_-]?role/i.test(key);
+  const valid=!!(url && key && /^https:\/\/.+\.supabase\.co\/?$/.test(url) && !url.includes('PASTE_') && !key.includes('PASTE_') && !unsafeKey);
+  return {url:url.replace(/\/$/,''),key,valid,unsafeKey};
 }
 function cloudAutoSyncEnabled(){return localStorage.getItem('taste_cloud_auto_sync')!=='0'}
 function setCloudMessage(msg){localStorage.setItem('taste_cloud_message',msg||'');updateCloudUI()}
@@ -418,13 +441,19 @@ function updateCloudUI(){
 async function initCloud(){
   updateCloudUI();
   const cfg=getCloudConfig();
-  if(!cfg.valid || !window.supabase?.createClient)return;
+  if(authSubscription){try{authSubscription.unsubscribe()}catch{} authSubscription=null}
+  if(!cfg.valid || !window.supabase?.createClient){supabaseClient=null;cloudSession=null;updateCloudUI();return}
   try{
     supabaseClient=window.supabase.createClient(cfg.url,cfg.key);
     const {data,error}=await supabaseClient.auth.getSession();
     if(error)throw error;
     cloudSession=data.session||null;
-    supabaseClient.auth.onAuthStateChange((_event,session)=>{cloudSession=session||null;updateCloudUI()});
+    const listener=supabaseClient.auth.onAuthStateChange((_event,session)=>{
+      cloudSession=session||null;
+      updateCloudUI();
+      if(currentPage==='settings') render();
+    });
+    authSubscription=listener?.data?.subscription||null;
     if(cloudSession) await startupCloudSync();
   }catch(err){
     console.warn('Supabase init failed',err);
@@ -433,9 +462,10 @@ async function initCloud(){
   updateCloudUI();
 }
 async function reinitCloud(){
+  if(authSubscription){try{authSubscription.unsubscribe()}catch{} authSubscription=null}
   supabaseClient=null;cloudSession=null;
   await initCloud();
-  render();
+  await render();
 }
 async function collectCloudPayload(){
   const stores={};
@@ -481,7 +511,11 @@ async function pushCloud(silent=false,bypassBusy=false){
     if(!silent)openCloudAuth();
     return false;
   }
-  if(cloudBusy&&!bypassBusy)return false;
+  if(cloudBusy&&!bypassBusy){
+    cloudSyncPending=true;
+    if(silent){clearTimeout(autoSyncTimer);autoSyncTimer=setTimeout(()=>pushCloud(true),1200)}
+    return false;
+  }
   try{
     cloudBusy=true;updateCloudUI();
     const payload=await collectCloudPayload();
@@ -497,7 +531,12 @@ async function pushCloud(silent=false,bypassBusy=false){
     console.error(err);
     if(!silent)alert('클라우드 업로드에 실패했습니다. Supabase 설정과 로그인 상태를 확인해주세요.');
     return false;
-  }finally{cloudBusy=false;updateCloudUI()}
+  }finally{
+    cloudBusy=false;updateCloudUI();
+    if(cloudSyncPending&&cloudSession&&cloudAutoSyncEnabled()){
+      cloudSyncPending=false;clearTimeout(autoSyncTimer);autoSyncTimer=setTimeout(()=>pushCloud(true),500);
+    }
+  }
 }
 async function pullCloud(force=false){
   if(!supabaseClient||!cloudSession){openCloudAuth();return false}
@@ -518,6 +557,13 @@ async function pullCloud(force=false){
     console.error(err);if(!force)alert('클라우드 기록을 불러오지 못했습니다.');return false;
   }finally{cloudBusy=false;updateCloudUI()}
 }
+async function ensureLocalUpdatedMarker(){
+  if(localStorage.getItem('taste_local_updated_at'))return;
+  const rows=await allRecords();
+  if(!rows.length)return;
+  const latest=rows.map(x=>x.updatedAt||x.createdAt||'').filter(Boolean).sort().pop();
+  localStorage.setItem('taste_local_updated_at',latest||new Date().toISOString());
+}
 function touchLocalAndSync(){
   localStorage.setItem('taste_local_updated_at',new Date().toISOString());
   if(!cloudSession||!cloudAutoSyncEnabled())return;
@@ -533,7 +579,7 @@ async function saveCloudSettings(){
   if(auto)localStorage.setItem('taste_cloud_auto_sync',auto.checked?'1':'0');
   await reinitCloud();
   const cfg=getCloudConfig();
-  alert(cfg.valid?'Supabase 설정을 저장했습니다.':'설정값을 저장했습니다. Project URL과 Publishable key를 확인해주세요.');
+  alert(cfg.valid?'Supabase 설정을 저장했습니다.':cfg.unsafeKey?'Secret/service-role key는 브라우저에 사용할 수 없습니다. Publishable key를 입력해주세요.':'설정값을 저장했습니다. Project URL과 Publishable key를 확인해주세요.');
 }
 function openCloudAuth(){
   if(!getCloudConfig().valid){go('settings');return}
@@ -584,17 +630,31 @@ function toggleTheme(){
 }
 
 function go(page,filter='all'){
-  currentPage=page;currentFilter=filter;
-  location.hash=page+(filter!=='all'?'/'+encodeURIComponent(filter):'');
-  render();
+  const normalizedFilter=(filter===undefined||filter===null||filter==='')?'all':String(filter);
+  const next=page+(normalizedFilter!=='all'?'/'+encodeURIComponent(normalizedFilter):'');
+  closeMobileMenu();
+  if(location.hash.replace(/^#/,'')===next){
+    currentPage=page;currentFilter=normalizedFilter;
+    render().then(()=>requestAnimationFrame(()=>window.scrollTo(0,0)));
+  }else{
+    location.hash=next;
+  }
 }
 function syncHash(){
-  const raw=location.hash.replace('#','')||'home';
-  const [p,f]=raw.split('/');
-  currentPage=p||'home';currentFilter=f?decodeURIComponent(f):'all';
+  const raw=location.hash.replace(/^#/,'')||'home';
+  const slash=raw.indexOf('/');
+  const p=slash>=0?raw.slice(0,slash):raw;
+  const f=slash>=0?raw.slice(slash+1):'';
+  const allowed=['home','tasting','recipe','food','favorites','stats','settings','search'];
+  currentPage=allowed.includes(p)?p:'home';
+  try{currentFilter=f?decodeURIComponent(f):'all'}catch{currentFilter='all'}
 }
 function setActiveNav(){
-  document.querySelectorAll('.nav button[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===currentPage));
+  document.querySelectorAll('.nav button[data-page]').forEach(b=>{
+    const active=b.dataset.page===currentPage;
+    b.classList.toggle('active',active);
+    if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
+  });
 }
 
 async function render(){
@@ -628,7 +688,7 @@ function recordCard(x,type=x._type){
       <div class="card-kicker">${esc(categoryOf(x))}${x.favorite?' · ★':''}</div>
       <div class="card-title">${esc(titleOf(x))}</div>
       <div class="card-meta">${esc(metaOf({...x,_type:type}))}<br>${fmtDate(x.date||x.createdAt)}</div>
-      <div class="card-tags">${(x.tags||[]).slice(0,4).map(t=>`<button class="tag" onclick="event.stopPropagation();searchTag('${esc(t)}')">#${esc(t)}</button>`).join('')}</div>
+      <div class="card-tags">${(x.tags||[]).slice(0,4).map(t=>`<button class="tag" onclick="event.stopPropagation();searchTag(decodeURIComponent('${encodeURIComponent(t)}'))">#${esc(t)}</button>`).join('')}</div>
     </div>
   </article>`
 }
@@ -666,7 +726,7 @@ const filters={
   recipe:['all','한식','일식','양식','중식','기타'],
   food:['all','식재료','조리법','발효','육가공','치즈','술','페어링','지역음식','기타']
 }
-const labels={tasting:'테이스팅 노트',recipe:'레시피 노트',food:'푸드 노트'}
+const labels={tasting:'테이스팅 노트',recipe:'레시피 노트',food:'스터디 노트'}
 async function renderLibrary(page,type){
   const rows=(await getAll(type)).sort((a,b)=>new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt));
   const filtered=currentFilter==='all'?rows:rows.filter(x=>categoryOf(x)===currentFilter);
@@ -745,11 +805,16 @@ async function renderSettings(page){
 }
 
 async function runSearch(){
-  const q=document.getElementById('globalSearch').value.trim();
+  const input=document.getElementById('globalSearch');
+  const q=input?.value.trim()||'';
   if(!q)return;
-  location.hash='search/'+encodeURIComponent(q);currentPage='search';currentFilter=q;render();
+  go('search',q);
 }
-function searchTag(tag){document.getElementById('globalSearch').value=tag;location.hash='search/'+encodeURIComponent(tag);currentPage='search';currentFilter=tag;render()}
+function searchTag(tag){
+  const input=document.getElementById('globalSearch');
+  if(input)input.value=tag;
+  go('search',tag);
+}
 async function renderSearch(page){
   const q=currentFilter==='all'?'':currentFilter.toLowerCase();
   document.getElementById('globalSearch').value=currentFilter==='all'?'':currentFilter;
@@ -761,31 +826,37 @@ async function renderSearch(page){
   page.innerHTML=`<div class="section-head"><div><div class="eyebrow">SEARCH</div><h2>“${esc(currentFilter)}” 검색 결과</h2><p>${result.length}건을 찾았습니다.</p></div></div>${result.length?`<div class="grid">${result.map(x=>recordCard(x,x._type)).join('')}</div>`:emptyBlock('검색 결과가 없습니다.')}`;
 }
 
+function syncBodyLock(){
+  const menuOpen=document.getElementById('siteSidebar')?.classList.contains('menu-open');
+  const modalOpen=!!document.querySelector('.modal.open');
+  document.body.style.overflow=(menuOpen||modalOpen)?'hidden':'';
+}
 function toggleMobileMenu(){
   if(window.innerWidth>980)return;
   const sidebar=document.getElementById('siteSidebar');
   const overlay=document.getElementById('mobileMenuOverlay');
   const btn=sidebar?.querySelector('.mobile-menu-btn');
+  if(!sidebar||!overlay)return;
   const open=!sidebar.classList.contains('menu-open');
   sidebar.classList.toggle('menu-open',open);
   overlay.classList.toggle('open',open);
   if(btn)btn.setAttribute('aria-expanded',String(open));
-  document.body.style.overflow=open?'hidden':'';
+  syncBodyLock();
 }
 function closeMobileMenu(){
   const sidebar=document.getElementById('siteSidebar');
   const overlay=document.getElementById('mobileMenuOverlay');
   const btn=sidebar?.querySelector('.mobile-menu-btn');
-  if(sidebar)sidebar.classList.remove('menu-open');
-  if(overlay)overlay.classList.remove('open');
+  sidebar?.classList.remove('menu-open');
+  overlay?.classList.remove('open');
   if(btn)btn.setAttribute('aria-expanded','false');
-  if(!document.querySelector('.modal.open'))document.body.style.overflow='';
+  syncBodyLock();
 }
 window.addEventListener('resize',()=>{if(window.innerWidth>980)closeMobileMenu()});
 
 function openQuickAdd(){closeMobileMenu();openModal('quickModal')}
-function openModal(id){document.getElementById(id).classList.add('open');document.body.style.overflow='hidden'}
-function closeModal(id){document.getElementById(id).classList.remove('open');document.body.style.overflow=''}
+function openModal(id){const el=document.getElementById(id);if(!el)return;el.classList.add('open');syncBodyLock()}
+function closeModal(id){const el=document.getElementById(id);if(!el)return;el.classList.remove('open');syncBodyLock()}
 function modalBackdrop(e,id){if(e.target.id===id)closeModal(id)}
 
 async function resizeImage(file){
@@ -922,7 +993,7 @@ async function saveRecipe(e){
 
 function editorCmd(cmd,val=null){
   document.getElementById('foodEditor').focus();
-  if(cmd==='createLink'){const url=prompt('링크 주소를 입력하세요');if(url)document.execCommand(cmd,false,url);return}
+  if(cmd==='createLink'){const url=prompt('링크 주소를 입력하세요');if(url&&/^(https?:|mailto:|tel:)/i.test(url.trim()))document.execCommand(cmd,false,url.trim());else if(url)alert('http(s), mailto, tel 형식의 링크만 사용할 수 있습니다.');return}
   document.execCommand(cmd,false,val);
 }
 async function openFoodForm(id=null){
@@ -946,7 +1017,7 @@ async function openFoodForm(id=null){
             <button type="button" onclick="editorCmd('formatBlock','BLOCKQUOTE')">인용</button>
             <button type="button" onclick="editorCmd('createLink')">링크</button>
           </div>
-          <div id="foodEditor" class="editor" contenteditable="true">${x.content||''}</div>
+          <div id="foodEditor" class="editor" contenteditable="true">${sanitizeRichHTML(x.content||'')}</div>
         </div>
         <div class="form-group full"><label>관련 기록 연결</label>${rel}</div>
       </div></div>
@@ -957,7 +1028,7 @@ async function openFoodForm(id=null){
 async function saveFood(e){
   e.preventDefault();const f=new FormData(e.target), old=editing.id?await getOne('food',editing.id):null;
   const obj={...(old||{}),id:editing.id||uid(),createdAt:old?.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),favorite:old?.favorite||false,photos:currentPhotos,
-    title:f.get('title').trim(),category:f.get('category'),source:f.get('source'),tags:parseTags(f.get('tags')),content:document.getElementById('foodEditor').innerHTML,
+    title:f.get('title').trim(),category:f.get('category'),source:f.get('source'),tags:parseTags(f.get('tags')),content:sanitizeRichHTML(document.getElementById('foodEditor').innerHTML),
     related:[...e.target.querySelectorAll('[name=related]:checked')].map(x=>x.value)};
   await putOne('food',obj);touchLocalAndSync();closeModal('formModal');go('food');
 }
@@ -980,7 +1051,7 @@ async function openDetail(type,id){
     ${x.photos?.[0]?`<div class="detail-cover"><img src="${x.photos[0]}"></div>`:''}
     <div class="eyebrow">${esc(x.category||'')}</div><div class="detail-title">${esc(x.name)}</div>
     <div class="detail-meta">${esc([x.producer,x.country,x.region].filter(Boolean).join(' · '))} · ${fmtDate(x.date||x.createdAt)}</div>
-    <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag('${esc(t)}')">#${esc(t)}</button>`).join('')}</div>
+    <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag(decodeURIComponent('${encodeURIComponent(t)}'))">#${esc(t)}</button>`).join('')}</div>
     <div class="detail-section"><h3>기본 정보</h3><div class="kv">
       <div>생산자</div><div>${esc(x.producer||'-')}</div><div>양조장·증류소</div><div>${esc(x.brewery||'-')}</div><div>빈티지</div><div>${esc(x.vintage||'-')}</div><div>도수</div><div>${esc(x.abv||'-')}${x.abv?'%':''}</div><div>가격</div><div>${x.price?Number(x.price).toLocaleString()+'원':'-'}</div><div>장소</div><div>${esc(x.place||'-')}</div>
     </div></div>
@@ -997,7 +1068,7 @@ async function openDetail(type,id){
       ${x.photos?.[0]?`<div class="detail-cover"><img src="${x.photos[0]}"></div>`:''}
       <div class="eyebrow">${esc(x.cuisine||'')}</div><div class="detail-title">${esc(x.title)}</div>
       <div class="detail-meta">${esc(x.version||'')} · 기준 ${base}인분 · ${fmtDate(x.updatedAt||x.createdAt)}</div>
-      <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag('${esc(t)}')">#${esc(t)}</button>`).join('')}</div>
+      <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag(decodeURIComponent('${encodeURIComponent(t)}'))">#${esc(t)}</button>`).join('')}</div>
       <div class="detail-section"><h3>인분 자동환산</h3><div class="chips">${[1,2,3,4,6].map(n=>`<button class="chip" onclick="scaleRecipe('${id}',${n},this)">${n}인분</button>`).join('')}</div></div>
       <div class="detail-section"><h3>재료</h3><div id="scaledIngredients">${(x.ingredients||[]).map(i=>`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><b>${esc(i.name)}</b><span>${esc(i.amount)} ${esc(i.unit)}</span></div>`).join('')}</div></div>
       <div class="detail-section"><h3>조리 순서</h3>${(x.steps||[]).map((s,i)=>`<div style="display:grid;grid-template-columns:34px 1fr;gap:10px;margin:12px 0"><div class="step-no" style="width:34px;height:34px">${i+1}</div><div style="line-height:1.7">${esc(s)}</div></div>`).join('')}</div>
@@ -1012,8 +1083,8 @@ async function openDetail(type,id){
     ${x.photos?.[0]?`<div class="detail-cover"><img src="${x.photos[0]}"></div>`:''}
     <div class="eyebrow">${esc(x.category||'')}</div><div class="detail-title">${esc(x.title)}</div>
     <div class="detail-meta">${esc(x.source||'')} ${x.source?'·':''} ${fmtDate(x.updatedAt||x.createdAt)}</div>
-    <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag('${esc(t)}')">#${esc(t)}</button>`).join('')}</div>
-    <div class="detail-section"><div class="rich">${x.content||'<span class="small">내용 없음</span>'}</div></div>
+    <div class="card-tags">${(x.tags||[]).map(t=>`<button class="tag" onclick="closeModal('detailModal');searchTag(decodeURIComponent('${encodeURIComponent(t)}'))">#${esc(t)}</button>`).join('')}</div>
+    <div class="detail-section"><div class="rich">${x.content?sanitizeRichHTML(x.content):'<span class="small">내용 없음</span>'}</div></div>
     ${x.photos?.length>1?`<div class="detail-section"><h3>사진</h3>${gallery(x.photos.slice(1))}</div>`:''}
     ${related?`<div class="detail-section"><h3>연결 기록</h3>${related}</div>`:''}
   `;
@@ -1058,14 +1129,47 @@ async function importData(e){
   e.target.value='';
 }
 async function wipeData(){
-  if(!confirm('모든 기록을 완전히 삭제할까요? 이 작업은 되돌릴 수 없습니다.'))return;
-  for(const s of STORES)await clearStore(s);
-  touchLocalAndSync();render();
+  const cloudWillSync=!!(cloudSession&&cloudAutoSyncEnabled());
+  const msg=cloudWillSync
+    ? '모든 기록을 삭제할까요? 자동 동기화가 켜져 있어 클라우드 기록도 빈 데이터로 동기화됩니다. 이 작업은 되돌릴 수 없습니다.'
+    : '이 브라우저의 모든 기록을 삭제할까요? 이 작업은 되돌릴 수 없습니다.';
+  if(!confirm(msg))return;
+  for(const store of STORES)await clearStore(store);
+  touchLocalAndSync();await render();
 }
 
-window.addEventListener('hashchange',()=>{syncHash();render()});
+document.addEventListener('click',e=>{
+  const nav=e.target.closest('[data-nav-page]');
+  if(!nav)return;
+  e.preventDefault();
+  go(nav.dataset.navPage||nav.dataset.page||'home');
+});
+window.addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  const openModals=[...document.querySelectorAll('.modal.open')];
+  if(openModals.length){closeModal(openModals.at(-1).id);return}
+  closeMobileMenu();
+});
+window.addEventListener('online',()=>{
+  if(cloudSession&&cloudAutoSyncEnabled()){clearTimeout(autoSyncTimer);autoSyncTimer=setTimeout(()=>pushCloud(true),500)}
+});
+window.addEventListener('hashchange',async()=>{
+  syncHash();closeMobileMenu();await render();requestAnimationFrame(()=>window.scrollTo(0,0));
+});
 window.addEventListener('DOMContentLoaded',async()=>{
-  applyTheme();await initDB();await migrateLegacyValues();syncHash();await render();await initCloud();
+  applyTheme();
+  try{
+    await initDB();
+    await migrateLegacyValues();
+    await ensureLocalUpdatedMarker();
+    syncHash();
+    await render();
+    await initCloud();
+  }catch(err){
+    console.error('TASTE ARCHIVE 초기화 오류',err);
+    const page=document.getElementById('page');
+    if(page)page.innerHTML='<div class="empty">사이트 데이터를 불러오는 중 오류가 발생했습니다. 페이지를 새로고침해 주세요.</div>';
+  }
 });
 </script>
 </body>
